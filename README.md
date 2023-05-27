@@ -1,3 +1,5 @@
+IMPORTANT: This project is not yet 100% complete.
+
 The Computer Restart Service will restart the computer under the following conditions:
 
 (1) The last user has logged off.
