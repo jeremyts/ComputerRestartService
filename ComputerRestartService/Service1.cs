@@ -1,6 +1,13 @@
-﻿// Version 1.0
+﻿// Version 1.1
 // Written by Jeremy Saunders (jeremy@jhouseconsulting.com) 29th August 2021
-// Modified by Jeremy Saunders (jeremy@jhouseconsulting.com) 12th November 2021
+// Modified by Jeremy Saunders (jeremy@jhouseconsulting.com) 28th December 2023
+//
+// Note this this code contains two functions that provides the same output. GetNumberLoggedOnUserSessions() and GetNumberLoggedOnUserSessions2()
+// I am using GetNumberLoggedOnUserSessions() after feedback from Remko Weijnen and Guy Leech convinced me that I should be using the WTS API for
+// reliability and accuracy. The query user (or quser) output lacks granularity for the logon time down to seconds, the session name is often
+// truncated on AVD. The WTS API gives way more information and is language independent. Due to the ammount of time and effort I put into the
+// GetNumberLoggedOnUserSessions2() function, I have left it in the code for future reference. It was converted from F# code originally posted by
+// "epicTurk" on the Code Project site here: https://www.codeproject.com/Tips/1160965/Parse-quser-exe-Results-with-Regex
 //
 using System;
 // Required for a List
@@ -31,6 +38,8 @@ using System.Reflection;
 using Microsoft.Win32;
 // Required for the Win32Exception class for interpreting Win32 errors
 using System.ComponentModel;
+// Required for the DllImport
+using System.Runtime.InteropServices;
 
 namespace ComputerRestartService
 {
@@ -46,6 +55,12 @@ namespace ComputerRestartService
             private static int _maxUptimeInDays;
             public static int MaxUptimeInDays { get { return _maxUptimeInDays; } set { _maxUptimeInDays = value; } }
 
+            private static int _inactivityTimerInMinutes;
+            public static int InactivityTimerInMinutes { get { return _inactivityTimerInMinutes; } set { _inactivityTimerInMinutes = value; } }
+
+            private static int _disconnectTimerInMinutes;
+            public static int DisconnectTimerInMinutes { get { return _disconnectTimerInMinutes; } set { _disconnectTimerInMinutes = value; } }
+
             private static int _repeatTimerInMilliseonds;
             public static int RepeatTimerInMilliseonds { get { return _repeatTimerInMilliseonds; } set { _repeatTimerInMilliseonds = value; } }
 
@@ -57,6 +72,9 @@ namespace ComputerRestartService
 
             private static bool _restartAfterLogoff;
             public static bool RestartAfterLogoff { get { return _restartAfterLogoff; } set { _restartAfterLogoff = value; } }
+
+            private static bool _shutdownAfterLogoff;
+            public static bool ShutdownAfterLogoff { get { return _shutdownAfterLogoff; } set { _shutdownAfterLogoff = value; } }
 
             private static bool _checkIfServiceIsRunning;
             public static bool CheckIfServiceIsRunning { get { return _checkIfServiceIsRunning; } set { _checkIfServiceIsRunning = value; } }
@@ -75,6 +93,9 @@ namespace ComputerRestartService
 
             public static string logfile = System.IO.Path.GetDirectoryName(Assembly.GetEntryAssembly().Location) + @"\" + Assembly.GetEntryAssembly().GetName().Name + ".log";
 
+            public static string regPolicyPath = @"SOFTWARE\Policies\Jeremy Saunders\ComputerRestartService";
+
+            public static string regPreferencePath = @"SOFTWARE\Jeremy Saunders\ComputerRestartService";
         }
 
         // A method that reads the appSettings from the registry and updates the global variables.
@@ -82,21 +103,26 @@ namespace ComputerRestartService
         public static string GetConfigValueFromRegistry(string valueName)
         {
             StringBuilder stringBuilder = new StringBuilder();
-            string regPolicyPath = @"SOFTWARE\Policies\Jeremy Saunders\ComputerRestartService";
-            string regPreferencePath = @"SOFTWARE\Jeremy Saunders\ComputerRestartService";
             string output = string.Empty;
             bool valuefound = false;
             try
             {
-                RegistryKey subKey1 = Registry.LocalMachine.OpenSubKey(regPolicyPath, false);
+                RegistryKey subKey1 = Registry.LocalMachine.OpenSubKey(Globals.regPolicyPath, false);
                 if (subKey1 != null)
                 {
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: Checking for the '" + subKey1.ToString() + @"\" + valueName + "' under the policies key with a value of " + output);
-                    output = (subKey1.GetValue(valueName).ToString());
-                    if (!string.IsNullOrEmpty(output))
+                    if (subKey1.GetValue(valueName) != null)
                     {
-                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " found under the policies key with a value of " + output);
-                        valuefound = true;
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: Checking for the '" + subKey1.ToString() + @"\" + valueName + "' under the policies key with a value of " + output);
+                        output = (subKey1.GetValue(valueName).ToString());
+                        if (!string.IsNullOrEmpty(output))
+                        {
+                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " found under the policies key with a value of " + output);
+                            valuefound = true;
+                        }
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the policies key: " + ex.Message.ToString());
                     }
                     subKey1.Close();
                 }
@@ -109,17 +135,24 @@ namespace ComputerRestartService
             {
                 try
                 {
-                    RegistryKey subKey2 = Registry.LocalMachine.OpenSubKey(regPreferencePath, false);
+                    RegistryKey subKey2 = Registry.LocalMachine.OpenSubKey(Globals.regPreferencePath, false);
                     if (subKey2 != null)
                     {
-                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: Checking for the '" + subKey2.ToString() + @"\" + valueName + "' under the policies key with a value of " + output);
-                        output = (string)subKey2.GetValue(valueName);
-                        if (!string.IsNullOrEmpty(output))
+                        if (subKey2.GetValue(valueName) != null)
                         {
-                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " found under the preferences key with a value of " + output);
-                            valuefound = true;
+                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: Checking for the '" + subKey2.ToString() + @"\" + valueName + "' under the policies key with a value of " + output);
+                            output = (string)subKey2.GetValue(valueName);
+                            if (!string.IsNullOrEmpty(output))
+                            {
+                                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " found under the preferences key with a value of " + output);
+                                valuefound = true;
+                            }
                         }
                         subKey2.Close();
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the preferences key: " + ex.Message.ToString());
                     }
                 }
                 catch (Exception ex)
@@ -148,6 +181,28 @@ namespace ComputerRestartService
             else
             {
                 stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - MaxUptimeInDays is not set in the registry. Will default to what is set in the " + Assembly.GetEntryAssembly().GetName().Name + ".exe.config");
+            }
+
+            if (!string.IsNullOrEmpty(GetConfigValueFromRegistry("InactivityTimerInMinutes")))
+            {
+                int.TryParse(GetConfigValueFromRegistry("InactivityTimerInMinutes"), out int InactivityTimerInMinutes);
+                Globals.InactivityTimerInMinutes = InactivityTimerInMinutes;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - InactivityTimerInMinutes is set to: " + Globals.InactivityTimerInMinutes.ToString());
+            }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - InactivityTimerInMinutes is not set in the registry. Will default to what is set in the " + Assembly.GetEntryAssembly().GetName().Name + ".exe.config");
+            }
+
+            if (!string.IsNullOrEmpty(GetConfigValueFromRegistry("DisconnectTimerInMinutes")))
+            {
+                int.TryParse(GetConfigValueFromRegistry("DisconnectTimerInMinutes"), out int DisconnectTimerInMinutes);
+                Globals.DisconnectTimerInMinutes = DisconnectTimerInMinutes;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - DisconnectTimerInMinutes is set to: " + Globals.DisconnectTimerInMinutes.ToString());
+            }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - InactivityTimerInMinutes is not set in the registry. Will default to what is set in the " + Assembly.GetEntryAssembly().GetName().Name + ".exe.config");
             }
 
             if (!string.IsNullOrEmpty(GetConfigValueFromRegistry("RepeatTimerInMilliseonds")))
@@ -193,6 +248,17 @@ namespace ComputerRestartService
             else
             {
                 stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - RestartAfterLogoff is not set in the registry. Will default to what is set in the " + Assembly.GetEntryAssembly().GetName().Name + ".exe.config");
+            }
+
+            if (!string.IsNullOrEmpty(GetConfigValueFromRegistry("ShutdownAfterLogoff")))
+            {
+                bool.TryParse(GetConfigValueFromRegistry("ShutdownAfterLogoff"), out bool ShutdownAfterLogoff);
+                Globals.ShutdownAfterLogoff = ShutdownAfterLogoff;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - ShutdownAfterLogoff is set to: " + Globals.ShutdownAfterLogoff.ToString());
+            }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettingsFromRegistry: - ShutdownAfterLogoff is not set in the registry. Will default to what is set in the " + Assembly.GetEntryAssembly().GetName().Name + ".exe.config");
             }
 
             if (!string.IsNullOrEmpty(GetConfigValueFromRegistry("CheckIfServiceIsRunning")))
@@ -268,6 +334,18 @@ namespace ComputerRestartService
                     Globals.MaxUptimeInDays = MaxUptimeInDays;
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettings: - MaxUptimeInDays is set to: " + Globals.MaxUptimeInDays.ToString());
                 }
+                if (s == "InactivityTimerInMinutes")
+                {
+                    int.TryParse(appSettings.Get(s), out int InactivityTimerInMinutes);
+                    Globals.InactivityTimerInMinutes = InactivityTimerInMinutes;
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettings: - InactivityTimerInMinutes is set to: " + Globals.InactivityTimerInMinutes.ToString());
+                }
+                if (s == "DisconnectTimerInMinutes")
+                {
+                    int.TryParse(appSettings.Get(s), out int DisconnectTimerInMinutes);
+                    Globals.DisconnectTimerInMinutes = DisconnectTimerInMinutes;
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettings: - DisconnectTimerInMinutes is set to: " + Globals.InactivityTimerInMinutes.ToString());
+                }
                 if (s == "RepeatTimerInMilliseonds")
                 {
                     int.TryParse(appSettings.Get(s), out int RepeatTimerInMilliseonds);
@@ -292,6 +370,12 @@ namespace ComputerRestartService
                     bool.TryParse(appSettings.Get(s), out bool RestartAfterLogoff);
                     Globals.RestartAfterLogoff = RestartAfterLogoff;
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettings: - RestartAfterLogoff is set to: " + Globals.RestartAfterLogoff.ToString());
+                }
+                if (s == "ShutdownAfterLogoff")
+                {
+                    bool.TryParse(appSettings.Get(s), out bool ShutdownAfterLogoff);
+                    Globals.ShutdownAfterLogoff = ShutdownAfterLogoff;
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigurationSettings: - ShutdownAfterLogoff is set to: " + Globals.ShutdownAfterLogoff.ToString());
                 }
                 if (s == "CheckIfServiceIsRunning")
                 {
@@ -371,7 +455,7 @@ namespace ComputerRestartService
         public void FileSystemWatcher_Changed(object sender, FileSystemEventArgs e)
         {
             StringBuilder stringBuilder = new StringBuilder();
-            stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : The " + e.FullPath + " file has changed.");
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: The " + e.FullPath + " file has changed.");
             try
             {
                 fileSystemWatcher.Changed -= FileSystemWatcher_Changed;
@@ -379,7 +463,10 @@ namespace ComputerRestartService
                 // Read and update the global variables from the appSettings section of the App.config
                 if (GetIdleFile(e.FullPath))
                 {
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : Updating the configuration settings.");
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: Updating the configuration settings.");
+                    if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+                    if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+                    stringBuilder.Clear();
                     GetConfigurationSettings();
                 }
                 // Read and update the global variables from the registry if UseSettingsFromRegistry is set to true
@@ -387,27 +474,50 @@ namespace ComputerRestartService
                 {
                     GetConfigurationSettingsFromRegistry();
                 }
+                if (Globals.RestartAfterLogoff && Globals.ShutdownAfterLogoff)
+                {
+                    Globals.ShutdownAfterLogoff = false;
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: As RestartAfterLogoff is set to true, the ShutdownAfterLogoff will be set to false");
+                }
 
                 // If the actual uptime is less than the MaxUptimeInDays variable, set the timer interval to the difference plus the repeat timer, for some buffer, and ensure the timer is enabled.
                 // Else
                 // If the RestartAfterLogoff variable is false, set the timer interval to the RepeatTimerInMilliseond and ensure the timer is enabled.
                 // else disable the timer because the logoff event will be used to restart this computer.
-                if (Convert.ToInt32(GetUptime().TotalMilliseconds) < (Globals.MaxUptimeInDays * 86400000))
+                // This value can be too large for an Int32, so we use long.
+                if (Convert.ToInt64(GetUptime().TotalMilliseconds) < (Globals.MaxUptimeInDays * 86400000))
                 {
-                    int interval = ((Globals.MaxUptimeInDays) * 86400000) - Convert.ToInt32(GetUptime().TotalMilliseconds + Globals.RepeatTimerInMilliseonds);
+                    long interval = ((Globals.MaxUptimeInDays) * 86400000) - Convert.ToInt64(GetUptime().TotalMilliseconds + Globals.RepeatTimerInMilliseonds);
+                    // The Timer.Interval Property is the time, in milliseconds, between Elapsed events. The value must be greater than zero, and less than or equal to Int32.MaxValue.
+                    // As the default is 100 milliseconds, this is what we set it too for the lowest value to avoid issues plus the Globals.RepeatTimerInMilliseond.
+                    if (interval <= 0)
+                    {
+                        interval = 100 + Globals.RepeatTimerInMilliseonds;
+                    }
+                    if (interval > Int32.MaxValue)
+                    {
+                        interval = Int32.MaxValue;
+                    }
                     _checkUptimeTimer.Interval = interval;
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : - The timer interval has now been updated to check every " + interval.ToString() + " milliseconds.");
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: - The timer interval has now been updated to check every " + interval.ToString() + " milliseconds.");
                     _checkUptimeTimer.Enabled = true;
                 }
                 else
                 {
-                    if (!Globals.RestartAfterLogoff)
+                    if (!Globals.RestartAfterLogoff && !Globals.ShutdownAfterLogoff)
                     {
                         // Update the Timer interval. If the interval is set after the Timer has started, the counter is reset.
                         if (_checkUptimeTimer.Interval != Globals.RepeatTimerInMilliseonds)
                         {
                             _checkUptimeTimer.Interval = Globals.RepeatTimerInMilliseonds;
-                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : - The timer interval has now been updated to check every " + Globals.RepeatTimerInMilliseonds.ToString() + " milliseconds.");
+                            if (Globals.RepeatTimerInMilliseonds < (Globals.MaxUptimeInDays * 86400000))
+                            {
+                                stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: - The timer interval has now been updated to check every " + Globals.RepeatTimerInMilliseonds.ToString() + " milliseconds.");
+                            }
+                            else
+                            {
+                                stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: - The timer interval has now been updated to check after " + Globals.RepeatTimerInMilliseonds.ToString() + " milliseconds.");
+                            }
                         }
                         _checkUptimeTimer.Enabled = true;
                     }
@@ -415,13 +525,20 @@ namespace ComputerRestartService
                     {
                         // Desctivate/Stop the Timer
                         _checkUptimeTimer.Enabled = false;
-                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : - The timer has now been disabled because the RestartAfterLogoff variable is set to True. Therefore the logoff event will be used to restart this computer.");
+                        if (Globals.RestartAfterLogoff)
+                        {
+                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: - The timer has now been disabled because the RestartAfterLogoff variable is set to True. Therefore the logoff event will be used to restart this computer.");
+                        }
+                        else
+                        {
+                            stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: - The timer has now been disabled because the ShutdownAfterLogoff variable is set to True. Therefore the logoff event will be used to shutdown this computer.");
+                        }
                     }
                 }
             }
             catch (Exception exception)
             {
-                stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed : " + exception.Message);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": FileSystemWatcher_Changed: " + exception.Message);
             }
             finally
             {
@@ -467,21 +584,79 @@ namespace ComputerRestartService
             return result;
         }
 
-        // Restart the computer using unmanaged code
-        public static void RestartMachineUnmanagedCode(bool force, int timeout)
+        // Logoff the session using unmanaged code
+        public static void LogoffSession(string username, string sessionid)
         {
             StringBuilder stringBuilder = new StringBuilder();
-            _eventLog.WriteEntry("The Computer Restart Service has initiated a restart.", EventLogEntryType.Information, 100);
-            stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineUnmanagedCode: The Computer Restart Service has initiated a restart.");
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": LogoffSession: Attempting to logoff " + username + " session ID" + sessionid + ".");
+            string stdOutput = string.Empty;
+            string stdError = string.Empty;
+            var proc = new ProcessStartInfo();
+            proc.FileName = "logoff.exe";
+            proc.Arguments = sessionid + " /V";
+            proc.CreateNoWindow = true;
+            proc.UseShellExecute = false;
+            proc.RedirectStandardOutput = true;
+            proc.RedirectStandardError = true;
+            var pi = new Process();
+            pi.StartInfo = proc;
+            try
+            {
+                pi.Start();
+                stdOutput = pi.StandardOutput.ReadToEnd();
+                stdError = pi.StandardError.ReadToEnd();
+                pi.WaitForExit();
+            }
+            catch (Exception e)
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": LogoffSession: " + e.Message);
+            }
+            if (pi.ExitCode == 0)
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": LogoffSession: " + stdOutput.ToString());
+            }
+            else
+            {
+                if (!string.IsNullOrEmpty(stdError))
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": LogoffSession: " + stdError.ToString());
+                }
+                if (stdOutput.Length != 0)
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": LogoffSession: " + stdOutput.ToString());
+                }
+            }
+            if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+            if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+        }
+        
+        // Restart the computer using unmanaged code
+        public static void RestartMachineUnmanagedCode(bool restart, bool force, int timeout)
+        {
+            StringBuilder stringBuilder = new StringBuilder();
+            if (restart)
+            {
+                _eventLog.WriteEntry("The Computer Restart Service has initiated a restart.", EventLogEntryType.Information, 100);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineUnmanagedCode: The Computer Restart Service has initiated a restart.");
+            }
+            else
+            {
+                _eventLog.WriteEntry("The Computer Restart Service has initiated a shutdown.", EventLogEntryType.Information, 100);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineUnmanagedCode: The Computer Restart Service has initiated a shutdown.");
+            }
             string filename = "shutdown.exe";
             string arguments = string.Empty;
-            if (!force)
+            if (restart)
             {
                 arguments = "/r /t " + timeout;
             }
             else
             {
-                arguments = "/r /t " + timeout + " /f";
+                arguments = "/s /t " + timeout;
+            }
+            if (force)
+            {
+                arguments = arguments + " /f";
             }
             var proc = new ProcessStartInfo(filename, arguments);
             proc.CreateNoWindow = true;
@@ -492,11 +667,19 @@ namespace ComputerRestartService
         }
 
         // Restart the computer using managed code
-        public static void RestartMachineManagedCode(bool force, int timeout)
+        public static void RestartMachineManagedCode(bool restart, bool force, int timeout)
         {
             StringBuilder stringBuilder = new StringBuilder();
-            _eventLog.WriteEntry("The Computer Restart Service has initiated a restart.", EventLogEntryType.Information, 100);
-            stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service has initiated a restart.");
+            if (restart)
+            {
+                _eventLog.WriteEntry("The Computer Restart Service has initiated a restart.", EventLogEntryType.Information, 100);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service has initiated a restart.");
+            }
+            else
+            {
+                _eventLog.WriteEntry("The Computer Restart Service has initiated a shutdown.", EventLogEntryType.Information, 100);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service has initiated a shutdown.");
+            }
             ManagementClass managementClass = new ManagementClass("Win32_OperatingSystem");
             managementClass.Get();
             bool EnablePrivileges = managementClass.Scope.Options.EnablePrivileges;
@@ -504,22 +687,44 @@ namespace ComputerRestartService
             ManagementBaseObject methodParameters = managementClass.GetMethodParameters("Win32ShutdownTracker");
             if (!force)
             {
-                methodParameters["Flags"] = 2; //Reboot
+                if (restart)
+                {
+                    methodParameters["Flags"] = 2; //Graceful Reboot
+                }
+                else
+                {
+                    methodParameters["Flags"] = 1; //Graceful Shutdown
+                }
             }
             else
             {
-                methodParameters["Flags"] = 6; //Forced Reboot
+                if (restart)
+                {
+                    methodParameters["Flags"] = 6; //Forced Reboot
+                }
+                else
+                {
+                    methodParameters["Flags"] = 5; //Forced Shutdown
+                }
             }
-            methodParameters["Timeout"] = timeout;
+            methodParameters["Timeout"] = timeout; //Timeout
             foreach (ManagementObject instance in managementClass.GetInstances())
             {
-                var outParams = instance.InvokeMethod("Win32Shutdown", methodParameters, (InvokeMethodOptions)null);
+                var outParams = instance.InvokeMethod("Win32ShutdownTracker", methodParameters, (InvokeMethodOptions)null);
                 int.TryParse(outParams["ReturnValue"].ToString(), out int returnCode);
                 if (returnCode != 0)
                 {
                     var ex = new Win32Exception(returnCode);
-                    _eventLog.WriteEntry("The Computer Restart Service failed to restart the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim(), EventLogEntryType.Error, 100);
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service failed to restart the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim());
+                    if (restart)
+                    {
+                        _eventLog.WriteEntry("The Computer Restart Service failed to restart the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim(), EventLogEntryType.Error, 100);
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service failed to restart the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim());
+                    }
+                    else
+                    {
+                        _eventLog.WriteEntry("The Computer Restart Service failed to shutdown the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim(), EventLogEntryType.Error, 100);
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": RestartMachineManagedCode: The Computer Restart Service failed to shutdown the computer: " + ex.Source.ToString().Trim() + "; " + ex.Message.ToString().Trim());
+                    }
                 }
             }
             managementClass.Scope.Options.EnablePrivileges = EnablePrivileges;
@@ -530,7 +735,7 @@ namespace ComputerRestartService
         // The SeesionIDMapping dictionary, which keeps a mapping of the SessionID to Username.
         public static Dictionary<string, string> SeesionIDMapping = new Dictionary<string, string>();
 
-        // The LoggedOnUser class is used by the outpit of the "query user" command.
+        // The LoggedOnUser class is used by the output of the EnumerateSessionInfo function. It's purposely been made to match the output of the "query user" command.
         public class LoggedOnUsers
         {
             public string Username { get; set; }
@@ -539,10 +744,234 @@ namespace ComputerRestartService
             public string State { get; set; }
             public string IdleTime { get; set; }
             public DateTime LogonTime { get; set; }
+            public bool StaleSession { get; set; }
+        }
+
+        // Constants for session information classes
+        const int WTS_CURRENT_SERVER_HANDLE = -1;
+
+        // WTS_INFO_CLASS enum for session information
+        public enum WTS_INFO_CLASS
+        {
+            WTSSessionId,
+            WTSUserName,
+            WTSWinStationName,
+            WTSClientName,
+            WTSClientAddress,
+            WTSClientDisplay,
+            WTSClientProtocolType,
+            WTSIdleTime,
+            WTSLogonTime,
+            WTSConnectState,
+        }
+
+        // Structure for session information
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WTS_SESSION_INFO
+        {
+            public int SessionID;
+            public string UserName;
+            public string SessionName;
+            public string ClientName;
+            public string ClientAddress;
+            public string ClientDisplay;
+            public int ClientProtocolType;
+            public long IdleTime;
+            public long LogonTime;
+            public int ConnectState;
+        }
+
+        [DllImport("wtsapi32.dll")]
+        static extern bool WTSEnumerateSessions(IntPtr hServer, int Reserved, int Version, ref IntPtr ppSessionInfo, ref int pCount);
+
+        [DllImport("wtsapi32.dll")]
+        static extern void WTSFreeMemory(IntPtr pMemory);
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        static extern bool WTSQuerySessionInformation(IntPtr hServer, int sessionId, WTS_INFO_CLASS wtsInfoClass, out IntPtr ppBuffer, out int pBytesReturned);
+
+        public static List<WTS_SESSION_INFO> EnumerateSessionInfo()
+        {
+            List<WTS_SESSION_INFO> sessionInfoList = new List<WTS_SESSION_INFO>();
+            IntPtr pSessionInfo = IntPtr.Zero;
+            int sessionCount = 0;
+
+            if (WTSEnumerateSessions(IntPtr.Zero, 0, 1, ref pSessionInfo, ref sessionCount))
+            {
+                IntPtr current = pSessionInfo;
+                for (int i = 0; i < sessionCount; i++)
+                {
+                    int sessionId = Marshal.ReadInt32(current);
+                    current += sizeof(int);
+
+                    // Get session information for all required fields in a single call
+                    IntPtr pInfo = IntPtr.Zero;
+                    int bytesReturned;
+
+                    if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSUserName, out pInfo, out bytesReturned))
+                    {
+                        WTS_SESSION_INFO sessionInfo = new WTS_SESSION_INFO();
+                        sessionInfo.SessionID = sessionId;
+                        sessionInfo.UserName = Marshal.PtrToStringAnsi(pInfo);
+                        WTSFreeMemory(pInfo);
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSWinStationName, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.SessionName = Marshal.PtrToStringAnsi(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientName, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.ClientName = Marshal.PtrToStringAnsi(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientAddress, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.ClientAddress = Marshal.PtrToStringAnsi(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientDisplay, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.ClientDisplay = Marshal.PtrToStringAnsi(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientProtocolType, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.ClientProtocolType = Marshal.ReadInt32(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSIdleTime, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.IdleTime = Marshal.ReadInt64(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSLogonTime, out pInfo, out bytesReturned))
+                        {
+                            // If LogonTime is to be represented in long format, use...
+                            sessionInfo.LogonTime = Marshal.ReadInt64(pInfo);
+                            // If LogonTime is to be represented in DateTime format use...
+                            //long logonTimeTicks = Marshal.ReadInt64(pInfo);
+                            //sessionInfo.LogonTime = DateTime.FromFileTimeUtc(logonTimeTicks);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSConnectState, out pInfo, out bytesReturned))
+                        {
+                            sessionInfo.ConnectState = Marshal.ReadInt32(pInfo);
+                            WTSFreeMemory(pInfo);
+                        }
+
+                        sessionInfoList.Add(sessionInfo);
+                    }
+                }
+
+                WTSFreeMemory(pSessionInfo);
+            }
+            else
+            {
+                Console.WriteLine($"WTSEnumerateSessions failed with error code: {Marshal.GetLastWin32Error()}");
+            }
+
+            return sessionInfoList;
+        }
+
+        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions()
+        {
+            StringBuilder stringBuilder = new StringBuilder();
+
+            List<LoggedOnUsers> loggedonusers = new List<LoggedOnUsers> { };
+            
+            List<WTS_SESSION_INFO> sessions = EnumerateSessionInfo();
+
+            if (sessions.Count > 0)
+            {
+                foreach (var session in sessions)
+                {
+                    SeesionIDMapping.Clear();
+
+                    int TotalDisconnectedTimeInMinutes = 0;
+                    bool IsStaleSession = false;
+
+                    DateTime parsedLogonTime;
+                    if (!DateTime.TryParse(session.LogonTime.ToString().Trim(), out parsedLogonTime))
+                    {
+                        parsedLogonTime = DateTime.MinValue;
+                    }
+                    if (session.ConnectState.ToString().Trim().IndexOf("Disc", StringComparison.CurrentCultureIgnoreCase) == 0)
+                    {
+                        if (session.IdleTime.ToString().Trim().IndexOf("none", StringComparison.CurrentCultureIgnoreCase) < 0 && session.IdleTime.ToString().Trim().IndexOf(".", StringComparison.CurrentCultureIgnoreCase) < 0)
+                        {
+                            int DaysDisconnected = 0;
+                            int HoursDisconnected = 0;
+                            int MinutesDisconnected = 0;
+                            if (session.IdleTime.ToString().Trim().IndexOf("+") > 0)
+                            {
+                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[0], out DaysDisconnected);
+                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[1].Split(':')[0], out HoursDisconnected);
+                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[1].Split(':')[1], out MinutesDisconnected);
+                            }
+                            else if (session.IdleTime.ToString().Trim().IndexOf(":") > 0)
+                            {
+                                int.TryParse(session.IdleTime.ToString().Trim().Split(':')[0], out HoursDisconnected);
+                                int.TryParse(session.IdleTime.ToString().Trim().Split(':')[1], out MinutesDisconnected);
+                            }
+                            else
+                            {
+                                int.TryParse(session.IdleTime.ToString().Trim(), out MinutesDisconnected);
+                            }
+                            TotalDisconnectedTimeInMinutes = (DaysDisconnected * 1440) + (HoursDisconnected * 60) + MinutesDisconnected;
+                        }
+                    }
+                    if (TotalDisconnectedTimeInMinutes > Globals.DisconnectTimerInMinutes)
+                    {
+                        IsStaleSession = true;
+                        // logoff the session
+                    }
+                    loggedonusers.Add(new LoggedOnUsers
+                    {
+                        Username = session.UserName.ToString().Trim(),
+                        SessionName = session.SessionName.ToString().Trim(),
+                        SessionID = session.SessionID.ToString().Trim(),
+                        State = session.ConnectState.ToString().Trim(),
+                        IdleTime = session.IdleTime.ToString().Trim(),
+                        LogonTime = parsedLogonTime,
+                        StaleSession = IsStaleSession
+                    });
+                    SeesionIDMapping.Add(session.SessionID.ToString().Trim(), session.UserName.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: - Username: " + session.UserName.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionName: " + session.SessionName.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionID: " + session.SessionID.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - State: " + session.ConnectState.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - IdleTime: " + session.IdleTime.ToString().Trim());
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - LogonTime: " + parsedLogonTime);
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - StaleSession: " + IsStaleSession.ToString());
+                }
+                if (sessions.Count == 1)
+                {
+                    stringBuilder.Insert(0, DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: Found " + sessions.Count + " logged on user session:" + Environment.NewLine);
+                }
+                else
+                {
+                    stringBuilder.Insert(0, DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: Found " + sessions.Count + " logged on user sessions:" + Environment.NewLine);
+                }
+            }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: No logged on user sessions were found");
+            }
+            if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+            if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+            return loggedonusers;
         }
 
         // Run the "query user" command and process the output.
-        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions()
+        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions2()
         {
             StringBuilder stringBuilder = new StringBuilder();
 
@@ -580,6 +1009,8 @@ namespace ComputerRestartService
                 while (match.Success)
                 {
                     matchCount++;
+                    int TotalDisconnectedTimeInMinutes = 0;
+                    bool IsStaleSession = false;
                     String username = match.Groups["username"].Value.ToString().Trim();
                     if (username.Substring(0, 1) == ">")
                     {
@@ -590,6 +1021,36 @@ namespace ComputerRestartService
                     {
                         parsedLogonTime = DateTime.MinValue;
                     }
+                    if (match.Groups["state"].Value.ToString().Trim().IndexOf("Disc", StringComparison.CurrentCultureIgnoreCase) == 0)
+                    {
+                        if (match.Groups["idletime"].Value.ToString().Trim().IndexOf("none", StringComparison.CurrentCultureIgnoreCase) < 0 && match.Groups["idletime"].Value.ToString().Trim().IndexOf(".", StringComparison.CurrentCultureIgnoreCase) < 0)
+                        {
+                            int DaysDisconnected = 0;
+                            int HoursDisconnected = 0;
+                            int MinutesDisconnected = 0;
+                            if (match.Groups["idletime"].Value.ToString().Trim().IndexOf("+") > 0)
+                            {
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim().Split('+')[0], out DaysDisconnected);
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim().Split('+')[1].Split(':')[0], out HoursDisconnected);
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim().Split('+')[1].Split(':')[1], out MinutesDisconnected);
+                            }
+                            else if (match.Groups["idletime"].Value.ToString().Trim().IndexOf(":") > 0)
+                            {
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim().Split(':')[0], out HoursDisconnected);
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim().Split(':')[1], out MinutesDisconnected);
+                            }
+                            else
+                            {
+                                int.TryParse(match.Groups["idletime"].Value.ToString().Trim(), out MinutesDisconnected);
+                            }
+                            TotalDisconnectedTimeInMinutes = (DaysDisconnected * 1440) + (HoursDisconnected * 60) + MinutesDisconnected;
+                        }
+                    }
+                    if (TotalDisconnectedTimeInMinutes > Globals.DisconnectTimerInMinutes)
+                    {
+                        IsStaleSession = true;
+                        // logoff the session
+                    }
                     loggedonusers.Add(new LoggedOnUsers
                     {
                         Username = username,
@@ -597,7 +1058,8 @@ namespace ComputerRestartService
                         SessionID = match.Groups["sessionid"].Value.ToString().Trim(),
                         State = match.Groups["state"].Value.ToString().Trim(),
                         IdleTime = match.Groups["idletime"].Value.ToString().Trim(),
-                        LogonTime = parsedLogonTime
+                        LogonTime = parsedLogonTime,
+                        StaleSession = IsStaleSession
                     });
                     SeesionIDMapping.Add(match.Groups["sessionid"].Value.ToString().Trim(), username);
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: - Username: " + username);
@@ -606,6 +1068,7 @@ namespace ComputerRestartService
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - State: " + match.Groups["state"].Value.ToString().Trim());
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - IdleTime: " + match.Groups["idletime"].Value.ToString().Trim());
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - LogonTime: " + parsedLogonTime);
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - StaleSession: " + IsStaleSession.ToString());
                     match = match.NextMatch();
                 }
                 if (matchCount == 1)
@@ -736,8 +1199,9 @@ namespace ComputerRestartService
             }
         }
 
-        // Setup the Timer object.
+        // Setup the Timer objects.
         private static Timer _checkUptimeTimer = new Timer();
+        private static Timer _checkInactivityTimer = new Timer();
 
         // Setup the Event Log object.
         private static EventLog _eventLog = new EventLog();
@@ -778,6 +1242,10 @@ namespace ComputerRestartService
             {
                 GetConfigurationSettingsFromRegistry();
             }
+            if (Globals.RestartAfterLogoff && Globals.ShutdownAfterLogoff) {
+                Globals.ShutdownAfterLogoff = false;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: As RestartAfterLogoff is set to true, the ShutdownAfterLogoff will be set to false");
+            }
 
             // Create a list of logged on users at service start
             GetNumberLoggedOnUserSessions();
@@ -789,26 +1257,70 @@ namespace ComputerRestartService
             WatchForSecurityEvent();
 
             // Call and set the computer uptime
-            int actualUptimeInMilliseconds = Convert.ToInt32(GetUptime().TotalMilliseconds);
+            int actualUptimeInDays = Convert.ToInt32(GetUptime().TotalDays);
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Computer uptime in days: " + actualUptimeInDays.ToString());
+            // This value when converted to milliseconds can be too large for an Int32, so we use long.
+            long actualUptimeInMilliseconds = Convert.ToInt64(GetUptime().TotalMilliseconds);
             stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Computer uptime in milliseconds: " + actualUptimeInMilliseconds.ToString());
 
-            // Setup and call the Timer
+            // Setup and call the Uptime Timer
             _checkUptimeTimer.Elapsed += new ElapsedEventHandler(CheckUptimeTimerElapsed);
+
             _checkUptimeTimer.AutoReset = true;
             // If the actual uptime is less than or equal to the MaxUptimeInDays variable, set the timer interval to the difference in milliseonds.
-            // We do this to avoid unnecessarily checking the MaxUptime until it has actually been reached.If it has been reached,
+            // We do this to avoid unnecessarily checking the MaxUptime until it has actually been reached. If it has been reached,
             // we set it to an interval as specified in the App.Config file.
             // 1 day = 86400000 milliseonds
-            int interval = Globals.RepeatTimerInMilliseonds;
+            long upTimeinterval = Globals.RepeatTimerInMilliseonds;
             if (actualUptimeInMilliseconds <= (Globals.MaxUptimeInDays * 86400000))
             {
-                interval = (Globals.MaxUptimeInDays * 86400000) - actualUptimeInMilliseconds + Globals.RepeatTimerInMilliseonds;
+                upTimeinterval = (Globals.MaxUptimeInDays * 86400000) - actualUptimeInMilliseconds + Globals.RepeatTimerInMilliseonds;
             }
-            _checkUptimeTimer.Interval = interval;
-            stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Setting the timer interval to " + interval.ToString() + " milliseconds.");
+            _checkUptimeTimer.Interval = upTimeinterval;
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Setting the UpTime timer interval to " + upTimeinterval.ToString() + " milliseconds.");
 
-            // Activate/Start the Timer
+            // Activate/Start the Uptime Timer
             _checkUptimeTimer.Enabled = true;
+
+            // Setup and call the Inactivity Timer
+            _checkInactivityTimer.Elapsed += new ElapsedEventHandler(CheckInactivityTimerElapsed);
+
+            _checkInactivityTimer.AutoReset = true;
+            // If the actual uptime is less than or equal to the InactivityTimerInMinutes variable, set the timer interval to the difference in milliseonds.
+            // We do this to avoid unnecessarily checking the Inactivity until it has actually been reached. If it has been reached,
+            // we set it to an interval as specified in the App.Config file.
+            // 1 day = 86400000 milliseonds
+            long InactivityInterval = Globals.InactivityTimerInMinutes;
+            if (actualUptimeInMilliseconds <= (Globals.InactivityTimerInMinutes * 86400000))
+            {
+                InactivityInterval = (Globals.InactivityTimerInMinutes * 86400000) - actualUptimeInMilliseconds + Globals.RepeatTimerInMilliseonds;
+            }
+
+            // The Timer.Interval Property is the time, in milliseconds, between Elapsed events. The value must be greater than zero, and less than or equal to Int32.MaxValue.
+            // As the default is 100 milliseconds, this is what we set it too for the lowest value to avoid issues.
+            // Remember that if the Globals.InactivityTimerInMinutes is 0, the _checkInactivityTimer is disabled.
+            if (InactivityInterval <= 0)
+            {
+                InactivityInterval = 100;
+            }
+            if (InactivityInterval > Int32.MaxValue)
+            {
+                InactivityInterval = Int32.MaxValue;
+            }
+            _checkInactivityTimer.Interval = InactivityInterval;
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Setting the Inactivity timer interval to " + InactivityInterval.ToString() + " milliseconds.");
+
+            // Activate/Start the Inactivity Timer
+            if (Globals.InactivityTimerInMinutes > 0)
+            {
+                _checkInactivityTimer.Enabled = true;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Enabling the Inactivity timer.");
+            }
+            else
+            {
+                _checkInactivityTimer.Enabled = false;
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnStart: Disabling the Inactivity timer because the InactivityTimerInMinutes setting is set to 0.");
+            }
 
             if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
             if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
@@ -837,7 +1349,7 @@ namespace ComputerRestartService
                     username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") has logged off from a session");
-                    if (Globals.RestartAfterLogoff)
+                    if (Globals.RestartAfterLogoff || Globals.ShutdownAfterLogoff)
                     {
                         // Refresh the list of logged on users after a logoff has occurred. If no more users are logged in, it can be rebooted.
                         if (GetNumberLoggedOnUserSessions().Count == 0)
@@ -866,12 +1378,27 @@ namespace ComputerRestartService
                             }
                             if (OkayToRestart)
                             {
-                                stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: Okay to restart.");
-                                RestartMachineManagedCode(Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                                if (Globals.RestartAfterLogoff)
+                                {
+                                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: Okay to restart.");
+                                    RestartMachineManagedCode(true, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                                }
+                                else
+                                {
+                                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: Okay to shutdown.");
+                                    RestartMachineManagedCode(false, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                                }
                             }
                             else
                             {
-                                stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: It cannot be restarted at this point.");
+                                if (Globals.RestartAfterLogoff)
+                                {
+                                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: It cannot be restarted at this point.");
+                                }
+                                else
+                                {
+                                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: It cannot be shutdown at this point.");
+                                }
                             }
                         }
                     }
@@ -933,7 +1460,7 @@ namespace ComputerRestartService
             _checkUptimeTimer.Stop();
         }
 
-        public void CheckUptimeTimerElapsed(object sender, ElapsedEventArgs e)
+        public void CheckInactivityTimerElapsed(object sender, ElapsedEventArgs e)
         {
             StringBuilder stringBuilder = new StringBuilder();
             string computerName = Environment.MachineName.ToString();
@@ -945,21 +1472,35 @@ namespace ComputerRestartService
                 if (CurrentLoggedOnUserCount == 0)
                 {
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - No users are currently logged in.");
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - Restarting...");
-                    RestartMachineManagedCode(Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                    if (Globals.RestartAfterLogoff)
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - Restarting...");
+                        RestartMachineManagedCode(true, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - Shutting down...");
+                        RestartMachineManagedCode(false, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                    }
                 }
                 else
                 {
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - " + CurrentLoggedOnUserCount + " users are still logged in.");
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - It cannot be restarted at this point.");
-
+                    if (Globals.RestartAfterLogoff)
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - It cannot be restarted at this point.");
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - It cannot be shutdown at this point.");
+                    }
                 }
             }
             else
             {
                 stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: " + computerName + " has not yet reached its maximum uptime of " + Globals.MaxUptimeInDays.ToString() + " days.");
             }
-            if (!Globals.RestartAfterLogoff)
+            if (!Globals.RestartAfterLogoff && !Globals.ShutdownAfterLogoff)
             {
                 // Update the Timer interval. If the interval is set after the Timer has started, the counter is reset.
                 if (_checkUptimeTimer.Interval != Globals.RepeatTimerInMilliseonds)
@@ -972,10 +1513,84 @@ namespace ComputerRestartService
             {
                 // Desctivate/Stop the Timer
                 _checkUptimeTimer.Enabled = false;
-                stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer has now been disabled because the RestartAfterLogoff variable is set to True. Therefore the logoff event will restart this computer.");
+                if (Globals.RestartAfterLogoff)
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer has now been disabled because the RestartAfterLogoff variable is set to True. Therefore the logoff event will restart this computer.");
+                }
+                else
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer has now been disabled because the ShutdownAfterLogoff variable is set to True. Therefore the logoff event will shutdown this computer.");
+                }
             }
             if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
             if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
         }
+
+        public void CheckUptimeTimerElapsed(object sender, ElapsedEventArgs e)
+        {
+            StringBuilder stringBuilder = new StringBuilder();
+            string computerName = Environment.MachineName.ToString();
+
+            if (HasTheMaximumUpTimeBeenReached())
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: The maximum uptime of " + Globals.MaxUptimeInDays.ToString() + " days has been reached on " + computerName + ".");
+                int CurrentLoggedOnUserCount = GetNumberLoggedOnUserSessions().Count;
+                if (CurrentLoggedOnUserCount == 0)
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - No users are currently logged in.");
+                    if (Globals.RestartAfterLogoff)
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - Restarting...");
+                        RestartMachineManagedCode(true, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - Shutting down...");
+                        RestartMachineManagedCode(false, Globals.ForceRestart, Globals.DelayBeforeRestartingInSeconds);
+                    }
+                }
+                else
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - " + CurrentLoggedOnUserCount + " users are still logged in.");
+                    if (Globals.RestartAfterLogoff)
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - It cannot be restarted at this point.");
+                    }
+                    else
+                    {
+                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - It cannot be shutdown at this point.");
+                    }
+                }
+            }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: " + computerName + " has not yet reached its maximum uptime of " + Globals.MaxUptimeInDays.ToString() + " days.");
+            }
+            if (!Globals.RestartAfterLogoff && !Globals.ShutdownAfterLogoff)
+            {
+                // Update the Timer interval. If the interval is set after the Timer has started, the counter is reset.
+                if (_checkUptimeTimer.Interval != Globals.RepeatTimerInMilliseonds)
+                {
+                    _checkUptimeTimer.Interval = Globals.RepeatTimerInMilliseonds;
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer interval has now been updated to check every " + Globals.RepeatTimerInMilliseonds.ToString() + " milliseconds.");
+                }
+            }
+            else
+            {
+                // Desctivate/Stop the Timer
+                _checkUptimeTimer.Enabled = false;
+                if (Globals.RestartAfterLogoff)
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer has now been disabled because the RestartAfterLogoff variable is set to True. Therefore the logoff event will restart this computer.");
+                }
+                else
+                {
+                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed : - The timer has now been disabled because the ShutdownAfterLogoff variable is set to True. Therefore the logoff event will shutdown this computer.");
+                }
+            }
+            if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+            if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+        }
+
     }
 }
