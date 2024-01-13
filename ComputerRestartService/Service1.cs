@@ -5,7 +5,9 @@
 // Note this this code contains two functions that provides the same output. GetNumberLoggedOnUserSessions() and GetNumberLoggedOnUserSessions2()
 // I am using GetNumberLoggedOnUserSessions() after feedback from Remko Weijnen and Guy Leech convinced me that I should be using the WTS API for
 // reliability and accuracy. The query user (or quser) output lacks granularity for the logon time down to seconds, the session name is often
-// truncated on AVD. The WTS API gives way more information and is language independent. Due to the ammount of time and effort I put into the
+// truncated on AVD. The WTS API gives way more information and is language independent.
+// Don't struggle with parsing the inconsistent/language specific output of quser.exe (query user), us
+// Due to the ammount of time and effort I put into the
 // GetNumberLoggedOnUserSessions2() function, I have left it in the code for future reference. It was converted from F# code originally posted by
 // "epicTurk" on the Code Project site here: https://www.codeproject.com/Tips/1160965/Parse-quser-exe-Results-with-Regex
 //
@@ -122,7 +124,7 @@ namespace ComputerRestartService
                     }
                     else
                     {
-                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the policies key: " + ex.Message.ToString());
+                        //stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the policies key: " + ex.Message.ToString());
                     }
                     subKey1.Close();
                 }
@@ -152,7 +154,7 @@ namespace ComputerRestartService
                     }
                     else
                     {
-                        stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the preferences key: " + ex.Message.ToString());
+                        //stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetConfigValueFromRegistry: " + valueName + " not found under the preferences key: " + ex.Message.ToString());
                     }
                 }
                 catch (Exception ex)
@@ -733,245 +735,417 @@ namespace ComputerRestartService
         }
 
         // The SeesionIDMapping dictionary, which keeps a mapping of the SessionID to Username.
-        public static Dictionary<string, string> SeesionIDMapping = new Dictionary<string, string>();
+        public Dictionary<string, string> SeesionIDMapping = new Dictionary<string, string>();
 
         // The LoggedOnUser class is used by the output of the EnumerateSessionInfo function. It's purposely been made to match the output of the "query user" command.
         public class LoggedOnUsers
         {
+            public string Domain { get; set; }
             public string Username { get; set; }
             public string SessionName { get; set; }
             public string SessionID { get; set; }
             public string State { get; set; }
             public string IdleTime { get; set; }
+            public int IdleTimeTotalMinutes { get; set; }
             public DateTime LogonTime { get; set; }
             public bool StaleSession { get; set; }
         }
 
-        // Constants for session information classes
-        const int WTS_CURRENT_SERVER_HANDLE = -1;
-
-        // WTS_INFO_CLASS enum for session information
-        public enum WTS_INFO_CLASS
+        // Have adapted the code from a post response on the TechNet C# forums by Chris Lewis from the Microsoft WinSDK Support Team.
+        // Reference: https://social.technet.microsoft.com/Forums/windowsserver/en-US/cbfd802c-5add-49f3-b020-c901f1a8d3f4/retrieve-user-logontime-on-terminal-service-with-remote-desktop-services-api?forum=csharpgeneral
+        public enum WTS_INFO_CLASS : int
         {
-            WTSSessionId,
-            WTSUserName,
-            WTSWinStationName,
-            WTSClientName,
-            WTSClientAddress,
-            WTSClientDisplay,
-            WTSClientProtocolType,
-            WTSIdleTime,
-            WTSLogonTime,
-            WTSConnectState,
+            WTSInitialProgram = 0,
+            WTSApplicationName = 1,
+            WTSWorkingDirectory = 2,
+            WTSOEMId = 3,
+            WTSSessionId = 4,
+            WTSUserName = 5,
+            WTSWinStationName = 6,
+            WTSDomainName = 7,
+            WTSConnectState = 8,
+            WTSClientBuildNumber = 9,
+            WTSClientName = 10,
+            WTSClientDirectory = 11,
+            WTSClientProductId = 12,
+            WTSClientHardwareId = 13,
+            WTSClientAddress = 14,
+            WTSClientDisplay = 15,
+            WTSClientProtocolType = 16,
+            WTSIdleTime = 17,
+            WTSLogonTime = 18,
+            WTSIncomingBytes = 19,
+            WTSOutgoingBytes = 20,
+            WTSIncomingFrames = 21,
+            WTSOutgoingFrames = 22,
+            WTSClientInfo = 23,
+            WTSSessionInfo = 24,
+            WTSSessionInfoEx = 25,
+            WTSConfigInfo = 26,
+            WTSValidationInfo = 27, // Info Class value used to fetch Validation Information through the WTSQuerySessionInformation
+            WTSSessionAddressV4 = 28,
+            WTSIsRemoteSession = 29
         }
 
-        // Structure for session information
-        [StructLayout(LayoutKind.Sequential)]
-        public struct WTS_SESSION_INFO
+        public enum WTS_CONNECTSTATE_CLASS : int
         {
-            public int SessionID;
-            public string UserName;
-            public string SessionName;
-            public string ClientName;
-            public string ClientAddress;
-            public string ClientDisplay;
-            public int ClientProtocolType;
-            public long IdleTime;
-            public long LogonTime;
-            public int ConnectState;
+            WTSActive,              // User logged on to WinStation                                                                                                                                           
+            WTSConnected,           // WinStation connected to client                                                                                                                                         
+            WTSConnectQuery,        // In the process of connecting to client                                                                                                                                 
+            WTSShadow,              // Shadowing another WinStation                                                                                                                                           
+            WTSDisconnected,        // WinStation logged on without client                                                                                                                                    
+            WTSIdle,                // Waiting for client to connect                                                                                                                                          
+            WTSListen,              // WinStation is listening for connection                                                                                                                                 
+            WTSReset,               // WinStation is being reset                                                                                                                                              
+            WTSDown,                // WinStation is down due to error                                                                                                                                        
+            WTSInit,                // WinStation in initialization                                                                                                                                           
         }
-
-        [DllImport("wtsapi32.dll")]
-        static extern bool WTSEnumerateSessions(IntPtr hServer, int Reserved, int Version, ref IntPtr ppSessionInfo, ref int pCount);
-
-        [DllImport("wtsapi32.dll")]
-        static extern void WTSFreeMemory(IntPtr pMemory);
-
-        [DllImport("wtsapi32.dll", SetLastError = true)]
-        static extern bool WTSQuerySessionInformation(IntPtr hServer, int sessionId, WTS_INFO_CLASS wtsInfoClass, out IntPtr ppBuffer, out int pBytesReturned);
-
-        public static List<WTS_SESSION_INFO> EnumerateSessionInfo()
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct WTSINFOA
         {
-            List<WTS_SESSION_INFO> sessionInfoList = new List<WTS_SESSION_INFO>();
-            IntPtr pSessionInfo = IntPtr.Zero;
-            int sessionCount = 0;
-
-            if (WTSEnumerateSessions(IntPtr.Zero, 0, 1, ref pSessionInfo, ref sessionCount))
+            public const int WINSTATIONNAME_LENGTH = 32;
+            public const int DOMAIN_LENGTH = 17;
+            public const int USERNAME_LENGTH = 20;
+            public WTS_CONNECTSTATE_CLASS State;
+            public int SessionId;
+            public int IncomingBytes;
+            public int OutgoingBytes;
+            public int IncomingFrames;
+            public int OutgoingFrames;
+            public int IncomingCompressedBytes;
+            public int OutgoingCompressedBytes;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = WINSTATIONNAME_LENGTH)]
+            public byte[] WinStationNameRaw;
+            public string WinStationName
             {
-                IntPtr current = pSessionInfo;
-                for (int i = 0; i < sessionCount; i++)
+                get
                 {
-                    int sessionId = Marshal.ReadInt32(current);
-                    current += sizeof(int);
+                    return Encoding.ASCII.GetString(WinStationNameRaw);
+                }
+            }
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = DOMAIN_LENGTH)]
+            public byte[] DomainRaw;
+            public string Domain
+            {
+                get
+                {
+                    return Encoding.ASCII.GetString(DomainRaw);
+                }
+            }
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = USERNAME_LENGTH + 1)]
+            public byte[] UserNameRaw;
+            public string UserName
+            {
+                get
+                {
+                    return Encoding.ASCII.GetString(UserNameRaw);
+                }
+            }
+            public long ConnectTimeUTC;
+            public DateTime ConnectTime
+            {
+                get
+                {
+                    return DateTime.FromFileTimeUtc(ConnectTimeUTC);
+                }
+            }
+            public long DisconnectTimeUTC;
+            public DateTime DisconnectTime
+            {
+                get
+                {
+                    return DateTime.FromFileTimeUtc(DisconnectTimeUTC);
+                }
+            }
+            public long LastInputTimeUTC;
+            public DateTime LastInputTime
+            {
+                get
+                {
+                    return DateTime.FromFileTimeUtc(LastInputTimeUTC);
+                }
+            }
+            public long LogonTimeUTC;
+            public DateTime LogonTime
+            {
+                get
+                {
+                    return DateTime.FromFileTimeUtc(LogonTimeUTC);
+                }
+            }
+            public long CurrentTimeUTC;
+            public DateTime CurrentTime
+            {
+                get
+                {
+                    return DateTime.FromFileTimeUtc(CurrentTimeUTC);
+                }
+            }
+        }
+        public class EnumerateSessionInfo
+        {
+            [DllImport("wtsapi32.dll")]
+            static extern IntPtr WTSOpenServer([MarshalAs(UnmanagedType.LPStr)] String pServerName);
 
-                    // Get session information for all required fields in a single call
-                    IntPtr pInfo = IntPtr.Zero;
-                    int bytesReturned;
+            [DllImport("wtsapi32.dll")]
+            static extern void WTSCloseServer(IntPtr hServer);
 
-                    if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSUserName, out pInfo, out bytesReturned))
+            [DllImport("wtsapi32.dll")]
+            static extern Int32 WTSEnumerateSessions(
+                IntPtr hServer,
+                [MarshalAs(UnmanagedType.U4)] Int32 Reserved,
+                [MarshalAs(UnmanagedType.U4)] Int32 Version,
+                ref IntPtr ppSessionInfo,
+                [MarshalAs(UnmanagedType.U4)] ref Int32 pCount);
+
+            [DllImport("wtsapi32.dll")]
+            static extern void WTSFreeMemory(IntPtr pMemory);
+
+            [DllImport("Wtsapi32.dll")]
+            static extern bool WTSQuerySessionInformation(System.IntPtr hServer, int sessionId, WTS_INFO_CLASS wtsInfoClass, out System.IntPtr ppBuffer, out uint pBytesReturned);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct WTS_SESSION_INFO
+            {
+                public Int32 SessionID;
+                [MarshalAs(UnmanagedType.LPStr)]
+                public String pWinStationName;
+                public WTS_CONNECTSTATE_CLASS State;
+            }
+
+            public static List<RDPSession> ListUsers()
+            {
+                List<RDPSession> List = new List<RDPSession>();
+
+                IntPtr serverHandle = IntPtr.Zero;
+                List<String> resultList = new List<string>();
+
+                IntPtr SessionInfoPtr = IntPtr.Zero;
+                IntPtr clientNamePtr = IntPtr.Zero;
+                IntPtr wtsinfoPtr = IntPtr.Zero;
+                IntPtr clientDisplayPtr = IntPtr.Zero;
+
+                try
+                {
+
+                    Int32 sessionCount = 0;
+                    Int32 retVal = WTSEnumerateSessions(IntPtr.Zero, 0, 1, ref SessionInfoPtr, ref sessionCount);
+                    Int32 dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+                    IntPtr currentSession = SessionInfoPtr;
+                    uint bytes = 0;
+                    if (retVal != 0)
                     {
-                        WTS_SESSION_INFO sessionInfo = new WTS_SESSION_INFO();
-                        sessionInfo.SessionID = sessionId;
-                        sessionInfo.UserName = Marshal.PtrToStringAnsi(pInfo);
-                        WTSFreeMemory(pInfo);
-
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSWinStationName, out pInfo, out bytesReturned))
+                        for (int i = 0; i < sessionCount; i++)
                         {
-                            sessionInfo.SessionName = Marshal.PtrToStringAnsi(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
+                            WTS_SESSION_INFO si = (WTS_SESSION_INFO)Marshal.PtrToStructure((System.IntPtr)currentSession, typeof(WTS_SESSION_INFO));
+                            currentSession += dataSize;
 
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientName, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.ClientName = Marshal.PtrToStringAnsi(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
+                            WTSQuerySessionInformation(IntPtr.Zero, si.SessionID, WTS_INFO_CLASS.WTSClientName, out clientNamePtr, out bytes);
+                            WTSQuerySessionInformation(IntPtr.Zero, si.SessionID, WTS_INFO_CLASS.WTSSessionInfo, out wtsinfoPtr, out bytes);
 
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientAddress, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.ClientAddress = Marshal.PtrToStringAnsi(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
+                            var wtsinfo = (WTSINFOA)Marshal.PtrToStructure(wtsinfoPtr, typeof(WTSINFOA));
+                            RDPSession temp = new RDPSession();
+                            // A byte with all bits set to 0 and converted to the ASCII is presented as "\0" null character. So we need to strip this from the strings to allow us to test/manipulate the strings without issues.
+                            temp.Client = Marshal.PtrToStringAnsi(clientNamePtr).Replace("\0", string.Empty).Trim();
+                            temp.UserName = wtsinfo.UserName.Replace("\0", string.Empty).Trim();
+                            temp.Domain = wtsinfo.Domain.Replace("\0", string.Empty).Trim();
+                            temp.ConnectionState = si.State;
+                            temp.SessionId = si.SessionID;
+                            temp.sessionInfo = wtsinfo;
+                            List.Add(temp);
 
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientDisplay, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.ClientDisplay = Marshal.PtrToStringAnsi(pInfo);
-                            WTSFreeMemory(pInfo);
+                            WTSFreeMemory(clientNamePtr);
+                            WTSFreeMemory(wtsinfoPtr);
                         }
-
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSClientProtocolType, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.ClientProtocolType = Marshal.ReadInt32(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
-
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSIdleTime, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.IdleTime = Marshal.ReadInt64(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
-
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSLogonTime, out pInfo, out bytesReturned))
-                        {
-                            // If LogonTime is to be represented in long format, use...
-                            sessionInfo.LogonTime = Marshal.ReadInt64(pInfo);
-                            // If LogonTime is to be represented in DateTime format use...
-                            //long logonTimeTicks = Marshal.ReadInt64(pInfo);
-                            //sessionInfo.LogonTime = DateTime.FromFileTimeUtc(logonTimeTicks);
-                            WTSFreeMemory(pInfo);
-                        }
-
-                        if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSConnectState, out pInfo, out bytesReturned))
-                        {
-                            sessionInfo.ConnectState = Marshal.ReadInt32(pInfo);
-                            WTSFreeMemory(pInfo);
-                        }
-
-                        sessionInfoList.Add(sessionInfo);
+                        WTSFreeMemory(SessionInfoPtr);
                     }
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Exception: " + ex.Message);
+                }
 
-                WTSFreeMemory(pSessionInfo);
+                return List;
             }
-            else
+
+            public string GetUsernameFromSessionID(int sessionId, bool prependDomain)
             {
-                Console.WriteLine($"WTSEnumerateSessions failed with error code: {Marshal.GetLastWin32Error()}");
+                IntPtr buffer = IntPtr.Zero;
+                uint bytes = 0;
+                string username = string.Empty;
+                try
+                {
+                    if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSUserName, out buffer, out bytes) && bytes > 1)
+                    {
+                        username = Marshal.PtrToStringAnsi(buffer).Replace("\0", string.Empty).Trim();
+                        WTSFreeMemory(buffer);
+                        if (prependDomain)
+                        {
+                            if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTS_INFO_CLASS.WTSDomainName, out buffer, out bytes) && bytes > 1)
+                            {
+                                username = Marshal.PtrToStringAnsi(buffer).Replace("\0", string.Empty).Trim() + "\\" + username;
+                                WTSFreeMemory(buffer);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Exception: " + ex.Message);
+                }
+                return username;
             }
-
-            return sessionInfoList;
         }
 
-        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions()
+        public class RDPSession
+        {
+            public string UserName;
+            public string Domain;
+            public int SessionId;
+            public string Client;
+            public WTS_CONNECTSTATE_CLASS ConnectionState;
+            public WTSINFOA sessionInfo;
+        }
+        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions(bool logOutput)
         {
             StringBuilder stringBuilder = new StringBuilder();
 
-            List<LoggedOnUsers> loggedonusers = new List<LoggedOnUsers> { };
-            
-            List<WTS_SESSION_INFO> sessions = EnumerateSessionInfo();
-
-            if (sessions.Count > 0)
+            int DisconnectTimerInMinutes = 8;
+            bool quserOutput = false;
+            if (quserOutput)
             {
-                foreach (var session in sessions)
+                Console.WriteLine($"{"DOMAIN",-17} {"USERNAME",-21} {"SESSIONNAME",-18} {"ID",-3} {"STATE",-13} {"IDLE TIME",-10} {"IDLE TIME (TOTAL MINUTES)",-27} {"LOGON TIME",-23}");
+            }
+
+            List<LoggedOnUsers> loggedonusers = new List<LoggedOnUsers> { };
+
+            List<RDPSession> SessionList = new List<RDPSession>();
+            SessionList = EnumerateSessionInfo.ListUsers();
+            if (SessionList.Count > 0)
+            {
+                // Clear the dictionary
+                SeesionIDMapping.Clear();
+            }
+            foreach (RDPSession item in SessionList)
+            {
+                int TotalDisconnectedTimeInMinutes = 0;
+                bool IsStaleSession = false;
+
+                string domainName = item.Domain;
+                string userName = item.UserName;
+                string sessioName = item.sessionInfo.WinStationName.Replace("\0", string.Empty).Trim();
+                int sessionID = item.SessionId;
+                string sessionState = item.ConnectionState.ToString().Replace("WTS", string.Empty);
+                // We use last input time to calculate idle time
+                string idleTimeString = ".";
+                int idleTotalMinutes = 0;
+                long lastInput = item.sessionInfo.LastInputTimeUTC;
+                if (lastInput != 0)
                 {
-                    SeesionIDMapping.Clear();
-
-                    int TotalDisconnectedTimeInMinutes = 0;
-                    bool IsStaleSession = false;
-
-                    DateTime parsedLogonTime;
-                    if (!DateTime.TryParse(session.LogonTime.ToString().Trim(), out parsedLogonTime))
+                    DateTime lastInputDt = DateTime.FromFileTimeUtc(lastInput);
+                    TimeSpan idleTime = DateTime.Now - lastInputDt.ToLocalTime();
+                    // Format of idle time is Days+Hours:Minutes
+                    // For example, 2 days 12 hours 22 minutes will look like 2+12:22
+                    if (idleTime.Days > 0)
                     {
-                        parsedLogonTime = DateTime.MinValue;
-                    }
-                    if (session.ConnectState.ToString().Trim().IndexOf("Disc", StringComparison.CurrentCultureIgnoreCase) == 0)
-                    {
-                        if (session.IdleTime.ToString().Trim().IndexOf("none", StringComparison.CurrentCultureIgnoreCase) < 0 && session.IdleTime.ToString().Trim().IndexOf(".", StringComparison.CurrentCultureIgnoreCase) < 0)
+                        idleTimeString = idleTime.Days.ToString() + "+";
+                        if (idleTime.Hours > 0)
                         {
-                            int DaysDisconnected = 0;
-                            int HoursDisconnected = 0;
-                            int MinutesDisconnected = 0;
-                            if (session.IdleTime.ToString().Trim().IndexOf("+") > 0)
-                            {
-                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[0], out DaysDisconnected);
-                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[1].Split(':')[0], out HoursDisconnected);
-                                int.TryParse(session.IdleTime.ToString().Trim().Split('+')[1].Split(':')[1], out MinutesDisconnected);
-                            }
-                            else if (session.IdleTime.ToString().Trim().IndexOf(":") > 0)
-                            {
-                                int.TryParse(session.IdleTime.ToString().Trim().Split(':')[0], out HoursDisconnected);
-                                int.TryParse(session.IdleTime.ToString().Trim().Split(':')[1], out MinutesDisconnected);
-                            }
-                            else
-                            {
-                                int.TryParse(session.IdleTime.ToString().Trim(), out MinutesDisconnected);
-                            }
-                            TotalDisconnectedTimeInMinutes = (DaysDisconnected * 1440) + (HoursDisconnected * 60) + MinutesDisconnected;
+                            idleTimeString = idleTimeString + idleTime.Hours.ToString() + ":";
+                        }
+                        if (idleTime.Minutes > 0)
+                        {
+                            idleTimeString = idleTimeString + idleTime.Minutes.ToString();
                         }
                     }
-                    if (TotalDisconnectedTimeInMinutes > Globals.DisconnectTimerInMinutes)
+                    if (idleTime.Days == 0 && idleTime.Hours > 0)
                     {
-                        IsStaleSession = true;
-                        // logoff the session
+                        idleTimeString = idleTime.Hours.ToString() + ":";
+                        if (idleTime.Minutes > 0)
+                        {
+                            idleTimeString = idleTimeString + idleTime.Minutes.ToString();
+                        }
                     }
-                    loggedonusers.Add(new LoggedOnUsers
+                    if (idleTime.Days == 0 && idleTime.Hours == 0 && idleTime.Minutes > 0)
                     {
-                        Username = session.UserName.ToString().Trim(),
-                        SessionName = session.SessionName.ToString().Trim(),
-                        SessionID = session.SessionID.ToString().Trim(),
-                        State = session.ConnectState.ToString().Trim(),
-                        IdleTime = session.IdleTime.ToString().Trim(),
-                        LogonTime = parsedLogonTime,
-                        StaleSession = IsStaleSession
-                    });
-                    SeesionIDMapping.Add(session.SessionID.ToString().Trim(), session.UserName.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: - Username: " + session.UserName.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionName: " + session.SessionName.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionID: " + session.SessionID.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - State: " + session.ConnectState.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - IdleTime: " + session.IdleTime.ToString().Trim());
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - LogonTime: " + parsedLogonTime);
-                    stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - StaleSession: " + IsStaleSession.ToString());
+                        idleTimeString = idleTime.Minutes.ToString();
+                    }
+                    if (idleTime.TotalMinutes > 0)
+                    {
+                        idleTotalMinutes = Convert.ToInt32(idleTime.TotalMinutes);
+                    }
                 }
-                if (sessions.Count == 1)
+                DateTime logonTime = item.sessionInfo.LogonTime.ToLocalTime();
+
+                if (sessionState.Equals("Disconnected", StringComparison.OrdinalIgnoreCase))
                 {
-                    stringBuilder.Insert(0, DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: Found " + sessions.Count + " logged on user session:" + Environment.NewLine);
+                    TotalDisconnectedTimeInMinutes = idleTotalMinutes;
                 }
-                else
+                if (TotalDisconnectedTimeInMinutes > DisconnectTimerInMinutes)
                 {
-                    stringBuilder.Insert(0, DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: Found " + sessions.Count + " logged on user sessions:" + Environment.NewLine);
+                    IsStaleSession = true;
+                    // logoff the session
                 }
+
+                // Exclude watching the following sessions:
+                // - if sessionid 0 and session name is "Services", it's the non-interactive (session zero isolation).
+                // - if session name is "Console", session state is "Connected" with no username, it's the console logon prompt.
+                // - if session state is "listen" and session id is 65536 and above, it's a listener.
+                if ((item.SessionId == 0 && sessioName.Equals("Services", StringComparison.OrdinalIgnoreCase)) && string.IsNullOrWhiteSpace(userName) ||
+                    (item.SessionId >= 65536 && sessionState.Equals("Listen", StringComparison.OrdinalIgnoreCase)) ||
+                    sessioName.Equals("Console", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(userName))
+                {
+                    continue;
+                }
+                loggedonusers.Add(new LoggedOnUsers
+                {
+                    Domain = domainName,
+                    Username = userName,
+                    SessionName = sessioName,
+                    SessionID = item.SessionId.ToString(),
+                    State = sessionState,
+                    IdleTime = idleTimeString,
+                    IdleTimeTotalMinutes = idleTotalMinutes,
+                    LogonTime = logonTime,
+                    StaleSession = IsStaleSession
+                }); ;
+                SeesionIDMapping.Add(item.SessionId.ToString(), domainName + "\\" + userName);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: - Username: " + domainName + "\\" + userName);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionName: " + sessioName);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - SessionID: " + item.SessionId.ToString());
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - State: " + sessionState);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - IdleTime: " + idleTimeString);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - IdleTimeTotalMinutes: " + idleTotalMinutes.ToString());
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - LogonTime: " + logonTime);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions:   - StaleSession: " + IsStaleSession.ToString());
+
+                if (quserOutput)
+                {
+                    Console.WriteLine($"{domainName,-17} {userName,-21} {sessioName,-18} {item.SessionId,-3} {sessionState,-13} {idleTimeString,-10} {idleTotalMinutes,-27} {logonTime,-23}");
+                    if (IsStaleSession)
+                    {
+                        Console.WriteLine("The session for " + domainName + '\\' + userName + " is a stale session");
+                    }
+                }
+
             }
-            else
+            if (logOutput)
             {
-                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: No logged on user sessions were found");
+                if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+                if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
             }
-            if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
-            if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
             return loggedonusers;
         }
 
+        public string GetUsernameFromSessionDetails(int sessionId, bool prependDomain)
+        {
+            EnumerateSessionInfo mc = new EnumerateSessionInfo();
+            string username = mc.GetUsernameFromSessionID(sessionId, prependDomain);
+            return username;
+        }
+
         // Run the "query user" command and process the output.
-        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions2()
+        public List<LoggedOnUsers> GetNumberLoggedOnUserSessions2(bool logOutput)
         {
             StringBuilder stringBuilder = new StringBuilder();
 
@@ -1016,14 +1190,15 @@ namespace ComputerRestartService
                     {
                         username = username.Substring(1, username.Length - 1);
                     }
+                    string domain = string.Empty;
                     DateTime parsedLogonTime;
                     if (!DateTime.TryParse(match.Groups["logontime"].Value.ToString().Trim(), out parsedLogonTime))
                     {
                         parsedLogonTime = DateTime.MinValue;
                     }
-                    if (match.Groups["state"].Value.ToString().Trim().IndexOf("Disc", StringComparison.CurrentCultureIgnoreCase) == 0)
+                    if (match.Groups["state"].Value.ToString().Trim().IndexOf("Disc", StringComparison.OrdinalIgnoreCase) == 0)
                     {
-                        if (match.Groups["idletime"].Value.ToString().Trim().IndexOf("none", StringComparison.CurrentCultureIgnoreCase) < 0 && match.Groups["idletime"].Value.ToString().Trim().IndexOf(".", StringComparison.CurrentCultureIgnoreCase) < 0)
+                        if (match.Groups["idletime"].Value.ToString().Trim().IndexOf("none", StringComparison.OrdinalIgnoreCase) < 0 && match.Groups["idletime"].Value.ToString().Trim().IndexOf(".", StringComparison.OrdinalIgnoreCase) < 0)
                         {
                             int DaysDisconnected = 0;
                             int HoursDisconnected = 0;
@@ -1053,6 +1228,7 @@ namespace ComputerRestartService
                     }
                     loggedonusers.Add(new LoggedOnUsers
                     {
+                        Domain = domain,
                         Username = username,
                         SessionName = match.Groups["sessionname"].Value.ToString().Trim(),
                         SessionID = match.Groups["sessionid"].Value.ToString().Trim(),
@@ -1082,7 +1258,7 @@ namespace ComputerRestartService
             }
             else
             {
-                if (stdErr.IndexOf("No User exists for", StringComparison.CurrentCultureIgnoreCase) >= 0)
+                if (stdErr.IndexOf("No User exists for", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: No logged on user sessions were found");
 
@@ -1092,18 +1268,30 @@ namespace ComputerRestartService
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetNumberLoggedOnUserSessions: An error occured: " + stdErr);
                 }
             }
-            if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
-            if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+            if (logOutput)
+            {
+                if (Globals.DebugToEventLog) { _eventLog.WriteEntry(stringBuilder.ToString(), EventLogEntryType.Information, 100); }
+                if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
+            }
             return loggedonusers;
         }
 
-        public string GetUsernameFromSessionID(string SessionID)
+        public string GetUsernameFromSessionIDMapping(string SessionID)
         {
+            StringBuilder stringBuilder = new StringBuilder();
             string username = string.Empty;
+            stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetUsernameFromSessionIDMapping: Find " + SessionID);
             if (SeesionIDMapping.ContainsKey(SessionID))
             {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetUsernameFromSessionIDMapping: Found " + SessionID);
                 SeesionIDMapping.TryGetValue(SessionID, out username);
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetUsernameFromSessionIDMapping: Found " + username);
             }
+            else
+            {
+                stringBuilder.AppendLine(DateTime.Now.ToString() + ": GetUsernameFromSessionIDMapping: Not Found " + SessionID);
+            }
+            //if (Globals.DebugToFile) { File.AppendAllText(Globals.logfile, stringBuilder.ToString()); }
             return username;
         }
 
@@ -1248,7 +1436,7 @@ namespace ComputerRestartService
             }
 
             // Create a list of logged on users at service start
-            GetNumberLoggedOnUserSessions();
+            GetNumberLoggedOnUserSessions(true);
 
             // Setup and call the file change event watcher
             WatchForFileChangeEvent();
@@ -1339,20 +1527,26 @@ namespace ComputerRestartService
             switch (changeDescription.Reason)
             {
                 case SessionChangeReason.SessionLogon:
-                    // Refresh the list of logged on users after a logon has occurred.
-                    GetNumberLoggedOnUserSessions();
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") has logged on to a session");
+                    // Refresh the list of logged on users after a logon has occurred.
+                    GetNumberLoggedOnUserSessions(false);
                     break;
                 case SessionChangeReason.SessionLogoff:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
-                    if (string.IsNullOrEmpty(username)) { username = "A user"; }
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
+                    if (string.IsNullOrEmpty(username)) {
+                        username = GetUsernameFromSessionIDMapping(changeDescription.SessionId.ToString());
+                        if (string.IsNullOrEmpty(username))
+                        {
+                            username = "A user";
+                        }
+                    }
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") has logged off from a session");
                     if (Globals.RestartAfterLogoff || Globals.ShutdownAfterLogoff)
                     {
                         // Refresh the list of logged on users after a logoff has occurred. If no more users are logged in, it can be rebooted.
-                        if (GetNumberLoggedOnUserSessions().Count == 0)
+                        if (GetNumberLoggedOnUserSessions(false).Count == 0)
                         {
                             bool OkayToRestart = false;
                             if (Globals.CheckIfServiceIsRunning)
@@ -1404,42 +1598,50 @@ namespace ComputerRestartService
                     }
                     break;
                 case SessionChangeReason.RemoteConnect:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") connected to a remote session");
                     break;
                 case SessionChangeReason.RemoteDisconnect:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") disconnected from a remote session");
                     break;
                 case SessionChangeReason.SessionRemoteControl:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") remote control status has changed.");
                     break;
                 case SessionChangeReason.ConsoleConnect:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") connected to the console session");
                     break;
                 case SessionChangeReason.ConsoleDisconnect:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") disconnected from the console session");
                     break;
                 case SessionChangeReason.SessionLock:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") locked their session");
                     break;
                 case SessionChangeReason.SessionUnlock:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") unlocked their session");
                     break;
                 default:
-                    username = GetUsernameFromSessionID(changeDescription.SessionId.ToString());
+                    //username = GetUsernameFromSessionID2(changeDescription.SessionId.ToString());
+                    username = GetUsernameFromSessionDetails(changeDescription.SessionId, true);
                     if (string.IsNullOrEmpty(username)) { username = "A user"; }
                     //stringBuilder.AppendLine(DateTime.Now.ToString() + ": OnSessionChange: " + username + " (Session ID " + changeDescription.SessionId.ToString() + ") has initiated an unknown action");
                     break;
@@ -1468,7 +1670,7 @@ namespace ComputerRestartService
             if (HasTheMaximumUpTimeBeenReached())
             {
                 stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: The maximum uptime of " + Globals.MaxUptimeInDays.ToString() + " days has been reached on " + computerName + ".");
-                int CurrentLoggedOnUserCount = GetNumberLoggedOnUserSessions().Count;
+                int CurrentLoggedOnUserCount = GetNumberLoggedOnUserSessions(true).Count;
                 if (CurrentLoggedOnUserCount == 0)
                 {
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - No users are currently logged in.");
@@ -1534,7 +1736,7 @@ namespace ComputerRestartService
             if (HasTheMaximumUpTimeBeenReached())
             {
                 stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: The maximum uptime of " + Globals.MaxUptimeInDays.ToString() + " days has been reached on " + computerName + ".");
-                int CurrentLoggedOnUserCount = GetNumberLoggedOnUserSessions().Count;
+                int CurrentLoggedOnUserCount = GetNumberLoggedOnUserSessions(true).Count;
                 if (CurrentLoggedOnUserCount == 0)
                 {
                     stringBuilder.AppendLine(DateTime.Now.ToString() + ": checkUptimeTimerElapsed: - No users are currently logged in.");
